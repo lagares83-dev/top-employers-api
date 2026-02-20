@@ -1,10 +1,31 @@
 from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
+import time
 
 app = Flask(__name__)
 
-def scrape_top_employers(country="spain", search_term=None):
+headers = {
+    "User-Agent": "Mozilla/5.0"
+}
+
+
+def get_sector(profile_url):
+    try:
+        response = requests.get(profile_url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        sector_tag = soup.select_one(".employer-branches__item")
+
+        if sector_tag:
+            return sector_tag.text.strip()
+        else:
+            return None
+    except Exception:
+        return None
+
+
+def scrape_top_employers(country="spain", search_term=None, limit=5):
     base_url = "https://www.top-employers.com/search-top-employers/"
 
     params = {
@@ -14,10 +35,6 @@ def scrape_top_employers(country="spain", search_term=None):
     if search_term:
         params["_employer_search"] = search_term
 
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
     response = requests.get(base_url, params=params, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -25,17 +42,23 @@ def scrape_top_employers(country="spain", search_term=None):
 
     cards = soup.select("article.employer-card")
 
-    for card in cards:
+    for card in cards[:limit]:
+
         name_tag = card.select_one(".employer-card__info__name a")
 
         if name_tag:
             name = name_tag.text.strip()
             profile_url = name_tag["href"]
 
+            sector = get_sector(profile_url)
+
             employers.append({
                 "name": name,
+                "sector": sector,
                 "profile_url": profile_url
             })
+
+            time.sleep(0.5)  # pequeña pausa para no parecer un bot agresivo
 
     return employers
 
@@ -49,18 +72,18 @@ def home():
 def search():
     country = request.args.get("country", "spain").lower()
     q = request.args.get("q")
-    limit = int(request.args.get("limit", 10))
+    limit = int(request.args.get("limit", 5))
 
-    results = scrape_top_employers(country=country, search_term=q)
+    results = scrape_top_employers(country=country, search_term=q, limit=limit)
 
     return jsonify({
-        "count": min(len(results), limit),
+        "count": len(results),
         "query": {
             "country": country,
             "q": q,
             "limit": limit
         },
-        "results": results[:limit],
+        "results": results,
         "source": "top-employers.com"
     })
 
