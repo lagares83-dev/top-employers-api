@@ -1,7 +1,6 @@
 from flask import Flask, jsonify, request
 import requests
 from bs4 import BeautifulSoup
-import time
 
 app = Flask(__name__)
 
@@ -26,6 +25,7 @@ def get_sector(profile_url):
 
 
 def scrape_top_employers(country="spain", search_term=None, limit=5):
+
     base_url = "https://www.top-employers.com/search-top-employers/"
 
     params = {
@@ -38,11 +38,14 @@ def scrape_top_employers(country="spain", search_term=None, limit=5):
     response = requests.get(base_url, params=params, headers=headers)
     soup = BeautifulSoup(response.text, "html.parser")
 
+    cards = soup.select("article.employer-card")
+    total_available = len(cards)
+
     employers = []
 
-    cards = soup.select("article.employer-card")
+    cards = cards[:limit]
 
-    for card in cards[:limit]:
+    for card in cards:
 
         name_tag = card.select_one(".employer-card__info__name a")
 
@@ -50,7 +53,11 @@ def scrape_top_employers(country="spain", search_term=None, limit=5):
             name = name_tag.text.strip()
             profile_url = name_tag["href"]
 
-            sector = get_sector(profile_url)
+            sector = None
+
+            # Solo scrapeamos sector si el límite es razonable
+            if limit <= 20:
+                sector = get_sector(profile_url)
 
             employers.append({
                 "name": name,
@@ -58,9 +65,7 @@ def scrape_top_employers(country="spain", search_term=None, limit=5):
                 "profile_url": profile_url
             })
 
-            time.sleep(0.5)  # pequeña pausa para no parecer un bot agresivo
-
-    return employers
+    return employers, total_available
 
 
 @app.route("/")
@@ -74,10 +79,15 @@ def search():
     q = request.args.get("q")
     limit = int(request.args.get("limit", 5))
 
-    results = scrape_top_employers(country=country, search_term=q, limit=limit)
+    results, total_available = scrape_top_employers(
+        country=country,
+        search_term=q,
+        limit=limit
+    )
 
     return jsonify({
-        "count": len(results),
+        "total_certified": total_available,
+        "returned": len(results),
         "query": {
             "country": country,
             "q": q,
