@@ -6,46 +6,99 @@ app = Flask(__name__)
 
 BASE_URL = "https://www.top-employers.com/search-top-employers/"
 
+# ===============================
+# Extraer todos los países
+# ===============================
 
-def get_country_total(country="spain"):
-    url = f"{BASE_URL}?_employer_country={country}"
-    response = requests.get(url, timeout=15)
+def get_all_countries():
+    response = requests.get(BASE_URL, timeout=15)
     response.raise_for_status()
-
     html = response.text
 
-    # Buscamos patrón tipo: Spain (146)
-    pattern = rf'{country.capitalize()} \((\d+)\)'
-    match = re.search(pattern, html)
+    pattern = r'<option value="([^"]+)">([^<]+) \((\d+)\)</option>'
+    matches = re.findall(pattern, html)
 
-    if not match:
-        raise Exception("Country count not found")
+    countries = []
 
-    total = int(match.group(1))
+    for value, name, count in matches:
+        countries.append({
+            "slug": value,
+            "country": name.strip(),
+            "certified_companies": int(count)
+        })
 
-    # También sacamos total global
-    global_match = re.search(r'"total_rows_unfiltered":(\d+)', html)
-    total_global = int(global_match.group(1)) if global_match else None
+    # Ordenamos por número descendente
+    countries = sorted(countries, key=lambda x: x["certified_companies"], reverse=True)
 
-    return {
-        "country": country,
-        "certified_companies": total,
-        "total_global": total_global
-    }
+    return countries
 
+
+# ===============================
+# Extraer datos de un país
+# ===============================
+
+def get_country_total(country="spain"):
+    countries = get_all_countries()
+
+    for c in countries:
+        if c["slug"] == country.lower():
+            return c
+
+    raise Exception("Country not found")
+
+
+# ===============================
+# ENDPOINTS
+# ===============================
 
 @app.route("/")
 def home():
-    return jsonify({"status": "Top Employers API running"})
+    return jsonify({"status": "Top Employers Intelligence API running"})
+
+
+@app.route("/top-employers/countries")
+def countries():
+    try:
+        data = get_all_countries()
+        return jsonify({
+            "total_countries": len(data),
+            "ranking": data
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/top-employers/country")
-def country_info():
+def country():
     country = request.args.get("country", "spain").lower()
 
     try:
-        result = get_country_total(country)
-        return jsonify(result)
+        data = get_country_total(country)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/top-employers/compare")
+def compare():
+    c1 = request.args.get("country1")
+    c2 = request.args.get("country2")
+
+    if not c1 or not c2:
+        return jsonify({"error": "Provide country1 and country2"}), 400
+
+    try:
+        data1 = get_country_total(c1)
+        data2 = get_country_total(c2)
+
+        difference = data1["certified_companies"] - data2["certified_companies"]
+
+        return jsonify({
+            "country1": data1,
+            "country2": data2,
+            "difference": difference
+        })
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
