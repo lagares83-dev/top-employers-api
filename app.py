@@ -1,32 +1,36 @@
 from flask import Flask, request, jsonify
 import requests
+import re
 
 app = Flask(__name__)
 
-FACET_ENDPOINT = "https://www.top-employers.com/wp-json/facetwp/v1/refresh"
+BASE_URL = "https://www.top-employers.com/search-top-employers/"
 
 
-def get_country_data(country="spain"):
-    payload = {
-        "facets": {
-            "employer_country": country
-        },
-        "paged": 1
-    }
-
-    response = requests.post(FACET_ENDPOINT, json=payload)
+def get_country_total(country="spain"):
+    url = f"{BASE_URL}?_employer_country={country}"
+    response = requests.get(url, timeout=15)
     response.raise_for_status()
 
-    data = response.json()
+    html = response.text
 
-    pager = data.get("settings", {}).get("pager", {})
+    # Buscamos patrón tipo: Spain (146)
+    pattern = rf'{country.capitalize()} \((\d+)\)'
+    match = re.search(pattern, html)
+
+    if not match:
+        raise Exception("Country count not found")
+
+    total = int(match.group(1))
+
+    # También sacamos total global
+    global_match = re.search(r'"total_rows_unfiltered":(\d+)', html)
+    total_global = int(global_match.group(1)) if global_match else None
 
     return {
         "country": country,
-        "certified_companies": pager.get("total_rows"),
-        "total_global": pager.get("total_rows_unfiltered"),
-        "per_page": pager.get("per_page"),
-        "total_pages": pager.get("total_pages")
+        "certified_companies": total,
+        "total_global": total_global
     }
 
 
@@ -40,7 +44,7 @@ def country_info():
     country = request.args.get("country", "spain").lower()
 
     try:
-        result = get_country_data(country)
+        result = get_country_total(country)
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
