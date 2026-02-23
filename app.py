@@ -7,13 +7,19 @@ app = Flask(__name__)
 BASE_URL = "https://www.top-employers.com"
 SEARCH_URL = BASE_URL + "/search-top-employers/"
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                  "Chrome/120.0.0.0 Safari/537.36"
+}
+
 
 # ======================================================
 # RANKING PAÍSES
 # ======================================================
 
 def get_all_countries():
-    response = requests.get(SEARCH_URL, timeout=20)
+    response = requests.get(SEARCH_URL, headers=HEADERS, timeout=20)
     response.raise_for_status()
     html = response.text
 
@@ -55,6 +61,7 @@ def get_country_total(country_slug):
 def search_company_slug(name):
     response = requests.get(
         f"{SEARCH_URL}?_employer_search={name}",
+        headers=HEADERS,
         timeout=20
     )
     response.raise_for_status()
@@ -72,7 +79,7 @@ def get_company_data(name):
     slug = search_company_slug(name)
     url = f"{BASE_URL}/employer/{slug}/"
 
-    response = requests.get(url, timeout=20)
+    response = requests.get(url, headers=HEADERS, timeout=20)
     response.raise_for_status()
     html = response.text
 
