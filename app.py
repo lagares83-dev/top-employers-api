@@ -4,14 +4,16 @@ import re
 
 app = Flask(__name__)
 
-BASE_URL = "https://www.top-employers.com/search-top-employers/"
+BASE_URL = "https://www.top-employers.com"
+SEARCH_URL = BASE_URL + "/search-top-employers/"
 
-# ===============================
-# Extraer todos los países
-# ===============================
+
+# ==========================================
+# RANKING PAÍSES
+# ==========================================
 
 def get_all_countries():
-    response = requests.get(BASE_URL, timeout=15)
+    response = requests.get(SEARCH_URL, timeout=15)
     response.raise_for_status()
     html = response.text
 
@@ -27,29 +29,74 @@ def get_all_countries():
             "certified_companies": int(count)
         })
 
-    # Ordenamos por número descendente
     countries = sorted(countries, key=lambda x: x["certified_companies"], reverse=True)
-
     return countries
 
 
-# ===============================
-# Extraer datos de un país
-# ===============================
-
 def get_country_total(country="spain"):
     countries = get_all_countries()
-
     for c in countries:
         if c["slug"] == country.lower():
             return c
-
     raise Exception("Country not found")
 
 
-# ===============================
+# ==========================================
+# EMPRESA
+# ==========================================
+
+def search_company_slug(name):
+    # buscamos en España por defecto
+    response = requests.get(f"{SEARCH_URL}?_employer_search={name}", timeout=15)
+    response.raise_for_status()
+    html = response.text
+
+    match = re.search(r'/employer/([^"]+)/', html)
+    if not match:
+        raise Exception("Company not found")
+
+    return match.group(1)
+
+
+def get_company_data(name):
+    slug = search_company_slug(name)
+    url = f"{BASE_URL}/employer/{slug}/"
+
+    response = requests.get(url, timeout=15)
+    response.raise_for_status()
+    html = response.text
+
+    # Sector
+    sector_match = re.search(r'branch-item">([^<]+)<', html)
+    sector = sector_match.group(1) if sector_match else None
+
+    # Certificaciones
+    certifications = []
+    if "Global" in html:
+        certifications.append("Global")
+    if "Europe" in html:
+        certifications.append("Europe")
+    if "Enterprise" in html:
+        certifications.append("Enterprise")
+
+    # Países certificados
+    country_pattern = r'data-country="([^"]+)"'
+    countries = re.findall(country_pattern, html)
+    unique_countries = list(set(countries))
+
+    return {
+        "name": name,
+        "sector": sector,
+        "certifications": certifications,
+        "countries_certified_in": unique_countries,
+        "total_countries": len(unique_countries),
+        "profile_url": url
+    }
+
+
+# ==========================================
 # ENDPOINTS
-# ===============================
+# ==========================================
 
 @app.route("/")
 def home():
@@ -58,25 +105,13 @@ def home():
 
 @app.route("/top-employers/countries")
 def countries():
-    try:
-        data = get_all_countries()
-        return jsonify({
-            "total_countries": len(data),
-            "ranking": data
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify(get_all_countries())
 
 
 @app.route("/top-employers/country")
 def country():
     country = request.args.get("country", "spain").lower()
-
-    try:
-        data = get_country_total(country)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return jsonify(get_country_total(country))
 
 
 @app.route("/top-employers/compare")
@@ -87,18 +122,24 @@ def compare():
     if not c1 or not c2:
         return jsonify({"error": "Provide country1 and country2"}), 400
 
+    data1 = get_country_total(c1)
+    data2 = get_country_total(c2)
+
+    return jsonify({
+        "country1": data1,
+        "country2": data2,
+        "difference": data1["certified_companies"] - data2["certified_companies"]
+    })
+
+
+@app.route("/top-employers/company")
+def company():
+    name = request.args.get("name")
+    if not name:
+        return jsonify({"error": "Provide company name"}), 400
+
     try:
-        data1 = get_country_total(c1)
-        data2 = get_country_total(c2)
-
-        difference = data1["certified_companies"] - data2["certified_companies"]
-
-        return jsonify({
-            "country1": data1,
-            "country2": data2,
-            "difference": difference
-        })
-
+        return jsonify(get_company_data(name))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
