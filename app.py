@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import requests
 import re
 import json
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -12,26 +13,30 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
+# ======================================================
+# CONFIGURACIÓN CACHE
+# ======================================================
+
+CACHE_DURATION_HOURS = 24  # Cambia si quieres menor tiempo
+
+DATA_CACHE = {
+    "ranking": [],
+    "last_update": None
+}
 
 # ======================================================
-# EXTRAER FWP_JSON DEL HTML
+# UTILIDADES
 # ======================================================
 
 def extract_fwp_json(html):
     match = re.search(r'window\.FWP_JSON\s*=\s*(\{.*?\});', html, re.DOTALL)
     if not match:
         raise Exception("FWP_JSON not found")
-
-    json_text = match.group(1)
-    return json.loads(json_text)
+    return json.loads(match.group(1))
 
 
-# ======================================================
-# RANKING PAÍSES
-# ======================================================
-
-def get_all_countries():
-    response = requests.get(SEARCH_URL, headers=HEADERS, timeout=20)
+def scrape_ranking():
+    response = requests.get(SEARCH_URL, headers=HEADERS, timeout=30)
     response.raise_for_status()
     html = response.text
 
@@ -60,78 +65,18 @@ def get_all_countries():
     return countries
 
 
-def get_country_total(country_slug):
-    countries = get_all_countries()
-
-    for c in countries:
-        if c["slug"] == country_slug.lower():
-            return c
-
-    raise Exception("Country not found")
+def refresh_data():
+    DATA_CACHE["ranking"] = scrape_ranking()
+    DATA_CACHE["last_update"] = datetime.utcnow()
 
 
-# ======================================================
-# EMPRESA
-# ======================================================
+def ensure_data_fresh():
+    if not DATA_CACHE["ranking"]:
+        refresh_data()
+        return
 
-def search_company_slug(name):
-    response = requests.get(
-        f"{SEARCH_URL}?_employer_search={name}",
-        headers=HEADERS,
-        timeout=20
-    )
-    response.raise_for_status()
-    html = response.text
-
-    match = re.search(r'/employer/([^"]+)/', html)
-
-    if not match:
-        raise Exception("Company not found")
-
-    return match.group(1)
-
-
-def get_company_data(name):
-    slug = search_company_slug(name)
-    url = f"{BASE_URL}/employer/{slug}/"
-
-    response = requests.get(url, headers=HEADERS, timeout=20)
-    response.raise_for_status()
-    html = response.text
-
-    # ===== SECTOR =====
-    sector_match = re.search(
-        r'<li class="employer-branches__item branch-item">([^<]+)</li>',
-        html
-    )
-    sector = sector_match.group(1).strip() if sector_match else None
-
-    # ===== CERTIFICACIONES =====
-    certifications = []
-    if "Global" in html:
-        certifications.append("Global")
-    if "Europe" in html:
-        certifications.append("Europe")
-    if "Enterprise" in html:
-        certifications.append("Enterprise")
-
-    # ===== PAÍSES =====
-    countries = re.findall(
-        r'<li class="employer-countries__list__item">([^<]+)</li>',
-        html
-    )
-
-    unique_countries = list(set(countries))
-
-    return {
-        "name": name,
-        "sector": sector,
-        "certifications": certifications,
-        "countries_certified_in": unique_countries,
-        "total_countries": len(unique_countries),
-        "profile_url": url
-    }
-
+    if datetime.utcnow() - DATA_CACHE["last_update"] > timedelta(hours=CACHE_DURATION_HOURS):
+        refresh_data()
 
 # ======================================================
 # ENDPOINTS
@@ -139,66 +84,77 @@ def get_company_data(name):
 
 @app.route("/")
 def home():
-    return jsonify({"status": "Top Employers Intelligence API running"})
+    return jsonify({
+        "status": "Top Employers Competitive Intelligence API",
+        "last_update": DATA_CACHE["last_update"]
+    })
 
 
-@app.route("/top-employers/countries")
-def countries():
-    try:
-        data = get_all_countries()
-        return jsonify({
-            "total_countries": len(data),
-            "ranking": data
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@app.route("/top-employers/ranking")
+def ranking():
+    ensure_data_fresh()
+
+    return jsonify({
+        "total_countries": len(DATA_CACHE["ranking"]),
+        "last_update": DATA_CACHE["last_update"],
+        "ranking": DATA_CACHE["ranking"]
+    })
 
 
 @app.route("/top-employers/country")
 def country():
+    ensure_data_fresh()
+
     country_slug = request.args.get("country", "spain").lower()
 
-    try:
-        data = get_country_total(country_slug)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    country_data = next(
+        (c for c in DATA_CACHE["ranking"] if c["slug"] == country_slug),
+        None
+    )
+
+    if not country_data:
+        return jsonify({"error": "Country not found"}), 404
+
+    return jsonify(country_data)
 
 
 @app.route("/top-employers/compare")
 def compare():
+    ensure_data_fresh()
+
     c1 = request.args.get("country1")
     c2 = request.args.get("country2")
 
     if not c1 or not c2:
         return jsonify({"error": "Provide country1 and country2"}), 400
 
-    try:
-        data1 = get_country_total(c1)
-        data2 = get_country_total(c2)
+    country1 = next((c for c in DATA_CACHE["ranking"] if c["slug"] == c1.lower()), None)
+    country2 = next((c for c in DATA_CACHE["ranking"] if c["slug"] == c2.lower()), None)
 
-        return jsonify({
-            "country1": data1,
-            "country2": data2,
-            "difference": data1["certified_companies"] - data2["certified_companies"]
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if not country1 or not country2:
+        return jsonify({"error": "Country not found"}), 404
+
+    difference = country1["certified_companies"] - country2["certified_companies"]
+
+    return jsonify({
+        "country1": country1,
+        "country2": country2,
+        "difference": difference
+    })
 
 
-@app.route("/top-employers/company")
-def company():
-    name = request.args.get("name")
+@app.route("/top-employers/force-update")
+def force_update():
+    refresh_data()
+    return jsonify({
+        "message": "Data refreshed manually",
+        "last_update": DATA_CACHE["last_update"]
+    })
 
-    if not name:
-        return jsonify({"error": "Provide company name"}), 400
 
-    try:
-        data = get_company_data(name)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+# ======================================================
+# START
+# ======================================================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
