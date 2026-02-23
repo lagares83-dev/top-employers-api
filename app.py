@@ -8,12 +8,12 @@ BASE_URL = "https://www.top-employers.com"
 SEARCH_URL = BASE_URL + "/search-top-employers/"
 
 
-# ==========================================
+# ======================================================
 # RANKING PAÍSES
-# ==========================================
+# ======================================================
 
 def get_all_countries():
-    response = requests.get(SEARCH_URL, timeout=15)
+    response = requests.get(SEARCH_URL, timeout=20)
     response.raise_for_status()
     html = response.text
 
@@ -22,36 +22,46 @@ def get_all_countries():
 
     countries = []
 
-    for value, name, count in matches:
+    for slug, name, count in matches:
         countries.append({
-            "slug": value,
+            "slug": slug,
             "country": name.strip(),
             "certified_companies": int(count)
         })
 
-    countries = sorted(countries, key=lambda x: x["certified_companies"], reverse=True)
+    countries = sorted(
+        countries,
+        key=lambda x: x["certified_companies"],
+        reverse=True
+    )
+
     return countries
 
 
-def get_country_total(country="spain"):
+def get_country_total(country_slug):
     countries = get_all_countries()
+
     for c in countries:
-        if c["slug"] == country.lower():
+        if c["slug"] == country_slug.lower():
             return c
+
     raise Exception("Country not found")
 
 
-# ==========================================
+# ======================================================
 # EMPRESA
-# ==========================================
+# ======================================================
 
 def search_company_slug(name):
-    # buscamos en España por defecto
-    response = requests.get(f"{SEARCH_URL}?_employer_search={name}", timeout=15)
+    response = requests.get(
+        f"{SEARCH_URL}?_employer_search={name}",
+        timeout=20
+    )
     response.raise_for_status()
     html = response.text
 
     match = re.search(r'/employer/([^"]+)/', html)
+
     if not match:
         raise Exception("Company not found")
 
@@ -62,15 +72,18 @@ def get_company_data(name):
     slug = search_company_slug(name)
     url = f"{BASE_URL}/employer/{slug}/"
 
-    response = requests.get(url, timeout=15)
+    response = requests.get(url, timeout=20)
     response.raise_for_status()
     html = response.text
 
-    # Sector
-    sector_match = re.search(r'branch-item">([^<]+)<', html)
-    sector = sector_match.group(1) if sector_match else None
+    # ===== SECTOR =====
+    sector_match = re.search(
+        r'<li class="employer-branches__item branch-item">([^<]+)</li>',
+        html
+    )
+    sector = sector_match.group(1).strip() if sector_match else None
 
-    # Certificaciones
+    # ===== CERTIFICACIONES =====
     certifications = []
     if "Global" in html:
         certifications.append("Global")
@@ -79,9 +92,12 @@ def get_company_data(name):
     if "Enterprise" in html:
         certifications.append("Enterprise")
 
-    # Países certificados
-    country_pattern = r'data-country="([^"]+)"'
-    countries = re.findall(country_pattern, html)
+    # ===== PAÍSES =====
+    countries = re.findall(
+        r'<li class="employer-countries__list__item">([^<]+)</li>',
+        html
+    )
+
     unique_countries = list(set(countries))
 
     return {
@@ -94,9 +110,9 @@ def get_company_data(name):
     }
 
 
-# ==========================================
+# ======================================================
 # ENDPOINTS
-# ==========================================
+# ======================================================
 
 @app.route("/")
 def home():
@@ -105,13 +121,25 @@ def home():
 
 @app.route("/top-employers/countries")
 def countries():
-    return jsonify(get_all_countries())
+    try:
+        data = get_all_countries()
+        return jsonify({
+            "total_countries": len(data),
+            "ranking": data
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/top-employers/country")
 def country():
-    country = request.args.get("country", "spain").lower()
-    return jsonify(get_country_total(country))
+    country_slug = request.args.get("country", "spain").lower()
+
+    try:
+        data = get_country_total(country_slug)
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/top-employers/compare")
@@ -122,24 +150,29 @@ def compare():
     if not c1 or not c2:
         return jsonify({"error": "Provide country1 and country2"}), 400
 
-    data1 = get_country_total(c1)
-    data2 = get_country_total(c2)
+    try:
+        data1 = get_country_total(c1)
+        data2 = get_country_total(c2)
 
-    return jsonify({
-        "country1": data1,
-        "country2": data2,
-        "difference": data1["certified_companies"] - data2["certified_companies"]
-    })
+        return jsonify({
+            "country1": data1,
+            "country2": data2,
+            "difference": data1["certified_companies"] - data2["certified_companies"]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/top-employers/company")
 def company():
     name = request.args.get("name")
+
     if not name:
         return jsonify({"error": "Provide company name"}), 400
 
     try:
-        return jsonify(get_company_data(name))
+        data = get_company_data(name)
+        return jsonify(data)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
