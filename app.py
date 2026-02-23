@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests
 import re
+import json
 
 app = Flask(__name__)
 
@@ -8,10 +9,21 @@ BASE_URL = "https://www.top-employers.com"
 SEARCH_URL = BASE_URL + "/search-top-employers/"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                  "Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0"
 }
+
+
+# ======================================================
+# EXTRAER FWP_JSON DEL HTML
+# ======================================================
+
+def extract_fwp_json(html):
+    match = re.search(r'window\.FWP_JSON\s*=\s*(\{.*?\});', html, re.DOTALL)
+    if not match:
+        raise Exception("FWP_JSON not found")
+
+    json_text = match.group(1)
+    return json.loads(json_text)
 
 
 # ======================================================
@@ -23,8 +35,12 @@ def get_all_countries():
     response.raise_for_status()
     html = response.text
 
+    fwp = extract_fwp_json(html)
+
+    dropdown_html = fwp["preload_data"]["facets"]["employer_country"]
+
     pattern = r'<option value="([^"]+)">([^<]+) \((\d+)\)</option>'
-    matches = re.findall(pattern, html)
+    matches = re.findall(pattern, dropdown_html)
 
     countries = []
 
