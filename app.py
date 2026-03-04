@@ -3,6 +3,7 @@ import requests
 import re
 import json
 from datetime import datetime, timedelta
+from collections import Counter
 
 app = Flask(__name__)
 
@@ -22,7 +23,7 @@ COMPANIES_BY_COUNTRY_CACHE = {}
 COMPANY_CACHE = {}
 
 # ------------------------------------------------
-# EXTRAER JSON
+# EXTRAER JSON DEL HTML
 # ------------------------------------------------
 
 def extract_fwp_json(html):
@@ -36,8 +37,9 @@ def extract_fwp_json(html):
 # ------------------------------------------------
 
 def scrape_ranking():
-    response = requests.get(SEARCH_URL, headers=HEADERS)
-    html = response.text
+
+    r = requests.get(SEARCH_URL, headers=HEADERS)
+    html = r.text
 
     fwp = extract_fwp_json(html)
 
@@ -49,6 +51,7 @@ def scrape_ranking():
     countries = []
 
     for slug, name, count in matches:
+
         if slug.strip() == "":
             continue
 
@@ -71,6 +74,7 @@ def refresh_data():
     DATA_CACHE["last_update"] = datetime.utcnow()
 
 def ensure_data_fresh():
+
     if not DATA_CACHE["ranking"]:
         refresh_data()
         return
@@ -95,6 +99,7 @@ def scrape_companies(country_slug, limit):
     companies = []
 
     for n in names[:limit]:
+
         companies.append({
             "name": n.strip(),
             "country": country_slug
@@ -155,21 +160,95 @@ def scrape_company(name):
     }
 
 # ------------------------------------------------
+# METRICAS
+# ------------------------------------------------
+
+def compute_metrics():
+
+    ranking = DATA_CACHE["ranking"]
+
+    total_countries = len(ranking)
+    total_companies = sum(c["certified_companies"] for c in ranking)
+
+    top_country = ranking[0]
+
+    top3 = sum(c["certified_companies"] for c in ranking[:3]) / total_companies
+    top5 = sum(c["certified_companies"] for c in ranking[:5]) / total_companies
+    top10 = sum(c["certified_companies"] for c in ranking[:10]) / total_companies
+
+    spain = next(c for c in ranking if c["slug"] == "spain")
+
+    spain_rank = ranking.index(spain) + 1
+
+    spain_share = spain["certified_companies"] / total_companies
+
+    return {
+        "total_countries": total_countries,
+        "total_companies": total_companies,
+        "top_country": top_country,
+        "concentration": {
+            "top3_share": top3,
+            "top5_share": top5,
+            "top10_share": top10
+        },
+        "spain": {
+            "rank": spain_rank,
+            "certified_companies": spain["certified_companies"],
+            "share_global": spain_share
+        }
+    }
+
+# ------------------------------------------------
+# SECTORES
+# ------------------------------------------------
+
+def sector_ranking():
+
+    sectors = []
+
+    for company in COMPANY_CACHE.values():
+
+        if company and company["sector"]:
+            sectors.append(company["sector"])
+
+    counter = Counter(sectors)
+
+    ranking = []
+
+    for sector, count in counter.most_common():
+
+        ranking.append({
+            "sector": sector,
+            "companies": count
+        })
+
+    return ranking
+
+# ------------------------------------------------
 # ENDPOINTS
 # ------------------------------------------------
 
 @app.route("/")
 def home():
+
     return jsonify({
-        "status": "Top Employers Competitive Intelligence API",
+        "status": "Top Employers Intelligence Engine",
         "last_update": DATA_CACHE["last_update"]
     })
 
 @app.route("/top-employers/ranking")
 def ranking():
+
     ensure_data_fresh()
 
     return jsonify(DATA_CACHE["ranking"])
+
+@app.route("/top-employers/metrics")
+def metrics():
+
+    ensure_data_fresh()
+
+    return jsonify(compute_metrics())
 
 @app.route("/top-employers/companies")
 def companies():
@@ -180,6 +259,7 @@ def companies():
     key = f"{country}_{limit}"
 
     if key not in COMPANIES_BY_COUNTRY_CACHE:
+
         COMPANIES_BY_COUNTRY_CACHE[key] = scrape_companies(country, limit)
 
     return jsonify(COMPANIES_BY_COUNTRY_CACHE[key])
@@ -192,20 +272,28 @@ def company():
     key = name.lower()
 
     if key not in COMPANY_CACHE:
+
         COMPANY_CACHE[key] = scrape_company(name)
 
     return jsonify(COMPANY_CACHE[key])
 
+@app.route("/top-employers/sectors")
+def sectors():
+
+    return jsonify(sector_ranking())
+
 @app.route("/top-employers/force-update")
 def force_update():
+
     refresh_data()
 
     return jsonify({
-        "message": "data refreshed",
+        "message": "dataset refreshed",
         "last_update": DATA_CACHE["last_update"]
     })
 
 # ------------------------------------------------
 
 if __name__ == "__main__":
+
     app.run(host="0.0.0.0", port=10000)
