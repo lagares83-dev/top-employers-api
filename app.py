@@ -13,20 +13,20 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0"
 }
 
-# ======================================================
+# ===============================================
 # CONFIGURACIÓN CACHE
-# ======================================================
+# ===============================================
 
-CACHE_DURATION_HOURS = 24  # Cambia si quieres menor tiempo
+CACHE_DURATION_HOURS = 24
 
 DATA_CACHE = {
     "ranking": [],
     "last_update": None
 }
 
-# ======================================================
+# ===============================================
 # UTILIDADES
-# ======================================================
+# ===============================================
 
 def extract_fwp_json(html):
     match = re.search(r'window\.FWP_JSON\s*=\s*(\{.*?\});', html, re.DOTALL)
@@ -38,8 +38,8 @@ def extract_fwp_json(html):
 def scrape_ranking():
     response = requests.get(SEARCH_URL, headers=HEADERS, timeout=30)
     response.raise_for_status()
-    html = response.text
 
+    html = response.text
     fwp = extract_fwp_json(html)
 
     dropdown_html = fwp["preload_data"]["facets"]["employer_country"]
@@ -71,6 +71,7 @@ def refresh_data():
 
 
 def ensure_data_fresh():
+
     if not DATA_CACHE["ranking"]:
         refresh_data()
         return
@@ -78,9 +79,10 @@ def ensure_data_fresh():
     if datetime.utcnow() - DATA_CACHE["last_update"] > timedelta(hours=CACHE_DURATION_HOURS):
         refresh_data()
 
-# ======================================================
+
+# ===============================================
 # ENDPOINTS
-# ======================================================
+# ===============================================
 
 @app.route("/")
 def home():
@@ -90,8 +92,33 @@ def home():
     })
 
 
+# NUEVO ENDPOINT PRINCIPAL PARA GPT
+@app.route("/top-employers")
+def top_employers():
+
+    ensure_data_fresh()
+
+    country_slug = request.args.get("country")
+
+    if country_slug:
+        country_slug = country_slug.lower()
+
+        country_data = next(
+            (c for c in DATA_CACHE["ranking"] if c["slug"] == country_slug),
+            None
+        )
+
+        if not country_data:
+            return jsonify({"error": "Country not found"}), 404
+
+        return jsonify(country_data)
+
+    return jsonify(DATA_CACHE["ranking"])
+
+
 @app.route("/top-employers/ranking")
 def ranking():
+
     ensure_data_fresh()
 
     return jsonify({
@@ -103,6 +130,7 @@ def ranking():
 
 @app.route("/top-employers/country")
 def country():
+
     ensure_data_fresh()
 
     country_slug = request.args.get("country", "spain").lower()
@@ -120,6 +148,7 @@ def country():
 
 @app.route("/top-employers/compare")
 def compare():
+
     ensure_data_fresh()
 
     c1 = request.args.get("country1")
@@ -145,16 +174,18 @@ def compare():
 
 @app.route("/top-employers/force-update")
 def force_update():
+
     refresh_data()
+
     return jsonify({
         "message": "Data refreshed manually",
         "last_update": DATA_CACHE["last_update"]
     })
 
 
-# ======================================================
+# ===============================================
 # START
-# ======================================================
+# ===============================================
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
