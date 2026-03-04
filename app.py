@@ -18,52 +18,145 @@ DATA_CACHE = {
     "last_update": None
 }
 
+COMPANIES_BY_COUNTRY_CACHE = {}
+COMPANY_CACHE = {}
 
-def extract_fwp_json(html: str) -> dict:
+# ------------------------------------------------
+# EXTRAER JSON
+# ------------------------------------------------
+
+def extract_fwp_json(html):
     match = re.search(r'window\.FWP_JSON\s*=\s*(\{.*?\});', html, re.DOTALL)
     if not match:
         raise Exception("FWP_JSON not found")
     return json.loads(match.group(1))
 
+# ------------------------------------------------
+# SCRAPE RANKING
+# ------------------------------------------------
 
 def scrape_ranking():
-    response = requests.get(SEARCH_URL, headers=HEADERS, timeout=30)
-    response.raise_for_status()
+    response = requests.get(SEARCH_URL, headers=HEADERS)
     html = response.text
 
     fwp = extract_fwp_json(html)
+
     dropdown_html = fwp["preload_data"]["facets"]["employer_country"]
 
     pattern = r'<option value="([^"]+)">([^<]+) \((\d+)\)</option>'
     matches = re.findall(pattern, dropdown_html)
 
     countries = []
+
     for slug, name, count in matches:
-        # Ignora el placeholder "Choose a country" si apareciera
         if slug.strip() == "":
             continue
+
         countries.append({
-            "slug": slug.strip(),
+            "slug": slug,
             "country": name.strip(),
             "certified_companies": int(count)
         })
 
     countries.sort(key=lambda x: x["certified_companies"], reverse=True)
+
     return countries
 
+# ------------------------------------------------
+# REFRESH DATA
+# ------------------------------------------------
 
 def refresh_data():
     DATA_CACHE["ranking"] = scrape_ranking()
     DATA_CACHE["last_update"] = datetime.utcnow()
 
-
 def ensure_data_fresh():
     if not DATA_CACHE["ranking"]:
         refresh_data()
         return
+
     if datetime.utcnow() - DATA_CACHE["last_update"] > timedelta(hours=CACHE_DURATION_HOURS):
         refresh_data()
 
+# ------------------------------------------------
+# SCRAPE EMPRESAS POR PAIS
+# ------------------------------------------------
+
+def scrape_companies(country_slug, limit):
+
+    url = f"{SEARCH_URL}?_employer_country={country_slug}"
+
+    r = requests.get(url, headers=HEADERS)
+    html = r.text
+
+    pattern = r'<h3 class="employer-card__info__name">.*?>(.*?)</a>'
+    names = re.findall(pattern, html)
+
+    companies = []
+
+    for n in names[:limit]:
+        companies.append({
+            "name": n.strip(),
+            "country": country_slug
+        })
+
+    return companies
+
+# ------------------------------------------------
+# SCRAPE EMPRESA
+# ------------------------------------------------
+
+def scrape_company(name):
+
+    search_url = f"{SEARCH_URL}?_employer_search={name}"
+
+    r = requests.get(search_url, headers=HEADERS)
+    html = r.text
+
+    match = re.search(r'/employer/([^"]+)/', html)
+
+    if not match:
+        return None
+
+    slug = match.group(1)
+
+    profile = f"{BASE_URL}/employer/{slug}/"
+
+    r = requests.get(profile, headers=HEADERS)
+    html = r.text
+
+    sector_match = re.search(
+        r'<li class="employer-branches__item branch-item">([^<]+)</li>',
+        html
+    )
+
+    sector = sector_match.group(1) if sector_match else None
+
+    countries = re.findall(
+        r'<li class="employer-countries__list__item">([^<]+)</li>',
+        html
+    )
+
+    certifications = []
+
+    if "Global" in html:
+        certifications.append("Global")
+
+    if "Europe" in html:
+        certifications.append("Europe")
+
+    return {
+        "name": name,
+        "sector": sector,
+        "countries_certified_in": countries,
+        "certifications": certifications,
+        "total_countries": len(countries),
+        "profile_url": profile
+    }
+
+# ------------------------------------------------
+# ENDPOINTS
+# ------------------------------------------------
 
 @app.route("/")
 def home():
@@ -72,105 +165,47 @@ def home():
         "last_update": DATA_CACHE["last_update"]
     })
 
-
 @app.route("/top-employers/ranking")
 def ranking():
     ensure_data_fresh()
-    return jsonify({
-        "total_countries": len(DATA_CACHE["ranking"]),
-        "last_update": DATA_CACHE["last_update"],
-        "ranking": DATA_CACHE["ranking"]
-    })
 
+    return jsonify(DATA_CACHE["ranking"])
 
-@app.route("/top-employers/country")
-def country():
-    ensure_data_fresh()
-    country_slug = request.args.get("country", "spain").lower()
+@app.route("/top-employers/companies")
+def companies():
 
-    country_data = next((c for c in DATA_CACHE["ranking"] if c["slug"] == country_slug), None)
-    if not country_data:
-        return jsonify({"error": "Country not found"}), 404
+    country = request.args.get("country")
+    limit = int(request.args.get("limit", 50))
 
-    return jsonify(country_data)
+    key = f"{country}_{limit}"
 
+    if key not in COMPANIES_BY_COUNTRY_CACHE:
+        COMPANIES_BY_COUNTRY_CACHE[key] = scrape_companies(country, limit)
 
-@app.route("/top-employers/compare")
-def compare():
-    ensure_data_fresh()
+    return jsonify(COMPANIES_BY_COUNTRY_CACHE[key])
 
-    c1 = request.args.get("country1")
-    c2 = request.args.get("country2")
+@app.route("/top-employers/company")
+def company():
 
-    if not c1 or not c2:
-        return jsonify({"error": "Provide country1 and country2"}), 400
+    name = request.args.get("name")
 
-    c1 = c1.lower()
-    c2 = c2.lower()
+    key = name.lower()
 
-    country1 = next((c for c in DATA_CACHE["ranking"] if c["slug"] == c1), None)
-    country2 = next((c for c in DATA_CACHE["ranking"] if c["slug"] == c2), None)
+    if key not in COMPANY_CACHE:
+        COMPANY_CACHE[key] = scrape_company(name)
 
-    if not country1 or not country2:
-        return jsonify({"error": "Country not found"}), 404
-
-    return jsonify({
-        "country1": country1,
-        "country2": country2,
-        "difference": country1["certified_companies"] - country2["certified_companies"]
-    })
-
-
-@app.route("/top-employers/metrics")
-def metrics():
-    """
-    Métricas competitivas calculadas SOLO con el ranking en memoria.
-    Cero scraping adicional.
-    """
-    ensure_data_fresh()
-    ranking = DATA_CACHE["ranking"]
-
-    total_countries = len(ranking)
-    total_companies = sum(c["certified_companies"] for c in ranking)
-
-    def share(top_n: int) -> float:
-        top_sum = sum(c["certified_companies"] for c in ranking[:top_n])
-        return (top_sum / total_companies) if total_companies else 0.0
-
-    # Top country
-    top_country = ranking[0] if ranking else None
-
-    # Spain stats
-    spain = next((c for c in ranking if c["slug"] == "spain"), None)
-    spain_rank = (ranking.index(spain) + 1) if spain else None
-    spain_share = (spain["certified_companies"] / total_companies) if (spain and total_companies) else None
-
-    return jsonify({
-        "last_update": DATA_CACHE["last_update"],
-        "total_countries": total_countries,
-        "total_companies": total_companies,
-        "top_country": top_country,
-        "concentration": {
-            "top3_share": share(3),
-            "top5_share": share(5),
-            "top10_share": share(10)
-        },
-        "spain": {
-            "rank": spain_rank,
-            "certified_companies": spain["certified_companies"] if spain else None,
-            "share_global": spain_share
-        }
-    })
-
+    return jsonify(COMPANY_CACHE[key])
 
 @app.route("/top-employers/force-update")
 def force_update():
     refresh_data()
+
     return jsonify({
-        "message": "Data refreshed manually",
+        "message": "data refreshed",
         "last_update": DATA_CACHE["last_update"]
     })
 
+# ------------------------------------------------
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=10000)
